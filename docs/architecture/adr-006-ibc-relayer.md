@@ -5,7 +5,7 @@
 
 ## Definitions
 On-chain IBC Client (aka IBC Client) - client code running on chain, typically only the lite client verification (?)
-Relayer Light Client - full light client functionality, including connecting to at least on provider (full node), storing and verifying headers, etc.
+Relayer Light Client - full light client functionality, including connecting to at least one provider (full node), storing and verifying headers, etc.
 Source chain (aka A chain) - the chain from which the relayer reads the IBC datagram
 Destination chain (aka B chain) - the chain where the realyer submits transactions that include the IBC message.
 
@@ -19,7 +19,7 @@ The diagram below shows a high level view of the relayer and its interactions wi
 ![IBC Relayer Architecture Diagram](assets/IBC_relayer.jpeg).
 
 ## Assumptions and Dependencies
-While many of the assumptions described here are those of correct IBC implementations of any chain, some are based on the current IBC implementation available on Cosmos-SDK.
+This section covers assumption and dependencies about the chains and their IBC implementation (consider only the IBC Cosmos-SDK), functionality required by the relayer that is outside the scope of this document, and their Rust implementations availability.
 
 #### Data Availability
 The relayer monitors the chain state to determine when packet forwarding is required. The relayer must be able to retrieve the data within some time bound. This is referred to as **data availability**.
@@ -57,7 +57,7 @@ Note: RPC `TxSearch/"tx_search"` could be use in the meantime.
 
 #### Keyring 
 The relay process must have access to its accounts with tokens on all destination chains, with sufficient balance to pay for transaction fees. Account key information must be stored and managed securely. A keyring implementation is required for CRUD key operations. 
-[Keyring-RUST] Investigation in existing Rust implementations is needed.
+[Keyring-RUST] Investigation in existing Rust implementations is needed. (ex: [hwchen-keyring](https://github.com/hwchen/keyring-rs))
 
 #### Implementation of IBC "routing module"
 The default IBC handler uses a receiver call pattern, where modules must individually call the IBC handler in order to bind to
@@ -68,18 +68,18 @@ ports, start handshakes, accept handshakes, send and receive packets, etc. While
 The relayer may batch transactions if supported by destination chain and allowed by configuration. In this case the relayer  can bundle multiple datagrams into a single transaction, which causes them to be executed in sequence, and amortise any overhead costs (e.g. signature checks for fee payment).
 Initial version of the relayer assumes batching is supported by all chains.
 
-## Correct Relayer Requirements
+## Relayer Requirements
 
-The relayer MUST:
+A correct relayer MUST:
 
-- **[R-config-start]** Allow for minimal required configuration
+- **[R-config-start]** Read, parse, validate a configuration file upon start and configure itself for the configured chains and paths
 - **[R-transport]** Have access to the networking protocols (e.g. TCP/IP, UDP/IP, or QUIC/IP) and physical transport, required to read the state of one blockchain/ machine and submit data to another
 - **[R-provider]** Maintain connections to at least one full node per chain
 - **[R-query]** Query IBC data on source and destination chains
-- **[R-light-client]** Run light clients for source chain and 
+- **[R-light-client]** Run light clients for source chains and 
 - **[R-IBC-client]** create and update IBC clients on destination chains 
 - **[R-accounts]** Own accounts on destination chains with sufficient balance to pay for transaction fees
-- **[R-transact]** Create, sign and forward IBC datagram transactions [ABCI Rust](https://github.com/tendermint/rust-abci)
+- **[R-transact]** Create, sign and forward IBC datagram transactions
 - **[R-relay]** Perform correct relaying of all required messages, according to the IBC sub-protocol constraints
 - **[R-restart]** Resume correct functionality after restarts
 - **[R-upgrade]** Resume correct functionality after upgrades
@@ -91,80 +91,131 @@ The relayer MAY:
 - **[R-relay-prio]** Filter or order transactions based on some criteria (e.g. in accordance with the fee payment model)
 
 ## Implementation
-The initial implementation will heavily borrow from the Go relayer implementation that uses a "naive" algorithm for relaying messages. The structure of the configuration file is also almost identical with the one in Go 
-(see [Go-Relayer](https://github.com/cosmos/relayer))
+The initial implementation will heavily borrow from the Go relayer implementation that uses a "naive" algorithm for relaying messages. The structure of the configuration file is similar with the one in Go (see [Go-Relayer](https://github.com/cosmos/relayer))
 
 ### Configuration
-Upon start the relayer reads a configuration file that includes global and per chain parameters. The file format is .yaml
-The relayer performs initialization based on the content of this file. 
+Upon start the relayer reads a configuration file that includes global and per chain parameters. The file format is .toml
+The relayer performs initialization based on the content of this file. Below is an example of a configuration file.
+
+```$xslt
+# This is an IBC relayer sample configuration
+title = "IBC Relayer Config Example"
+
+[global]
+timeout = "10s"
+strategy = "naive"
+
+[[chains]]
+  id = "chain-A"
+  rpc-addr = "http://localhost:26657"
+  account-prefix = "cosmos"
+  key-name = "testkey"
+  client-ids = ["clA1", "clA2"]
+  gas = 200000
+  gas-adjustement = 1.3
+  gas-price = "0.025stake"
+  trusting-period = "336h"
+
+[[chains]]
+  id = "chain-B"
+  rpc-addr = "http://localhost:26557"
+  account-prefix = "cosmos"
+  key-name = "testkey"
+  client-ids = ["clB1"]
+  gas = 200000
+  gas-adjustement = 1.3
+  gas-price = "0.025stake"
+  trusting-period = "336h"
+
+[[connections]]
+
+[connections.src]
+  client-id = "clA1"
+  connection-id = "conn1-idA-clA1"
+[connections.dest]
+  client-id = "clB1"
+  connection-id = "conn1-idB-clB1"
+
+[[connections.paths]]
+  ports = ["app1-port-A", "app1-port-B"]
+  direction = "unidirectional"
+[[connections.paths]]
+  ports = ["app2-port-A", "app2-port-B"]
+  direction = "bidirectional"
+```
 
 #### Global
 ```
-global:
-   timeout: "5s"
-   strategy: "naive"
+[global]
+timeout = "10s"
+strategy = "naive"
 ```
 
 Relaying is done periodically and the frequency is dictated by the `timeout` parameter. The `strategy` parameter configures the relayer to run a particular relaying algorithm.
 
 #### Chains 
-Chain level information including account and key name, gas information, trusting period, etc.
+Chain level information including account and key name, gas information, trusting period, etc. All source and destination chains must be listed here.
 ```
-chains:
-- chain-id: ibc0
-  client-id: ibc0clientId  -> this is the clientID for this chain's client on other chains
-  rpc-addr: http://localhost:26657
-  account-prefix: cosmos
-  key-name: ibcKey
-  default-denom: stake
-  gas: 200000
-  gas-adjustement: 1.3
-  gas-prices: "0.025stake"
-  trusting-period: 336h
+[[chains]]
+  id = "chain-B"
+  rpc-addr = "http://localhost:26557"
+  account-prefix = "cosmos"
+  key-name = "testkey"
+  client-ids = ["clB1"]
+  gas = 200000
+  gas-adjustement = 1.3
+  gas-price = "0.025stake"
+  trusting-period = "336h"
 ```
-At least two chains should be specified.
 
 #### Relay Paths 
-The realyer can be configured to relay over a set of `src -> dest` paths where `src` and `dest` are specified in the `chains` section of the configuration.
-This `paths` section of the config file describes the paths enabled for relaying and provides additional information. Mutliple paths can be defined.
+The realyer can be configured to relay between some application ports, over a number of connections and channels, in unidirectional or bidirectional mode.
 
 ```$xslt
-paths:
-- src:
-    chain-id: ibc0
-    connection-id: ibconeconn
-    channel-id: ibconechan
-    port-id: bank
-  dst:
-    chain-id: ibc0
-    connection-id: ibczeroconn
-    channel-id: ibczerochan
-    port-id: bank
+[[connections]]
+
+[connections.src]
+  client-id = "clA1"
+  connection-id = "conn1-idA-clA1"
+[connections.dest]
+  client-id = "clB1"
+  connection-id = "conn1-idB-clB1"
+
+[[connections.paths]]
+  ports = ["app1-port-A", "app1-port-B"]
+  direction = "unidirectional"
+[[connections.paths]]
+  ports = ["app2-port-A", "app2-port-B"]
+  direction = "bidirectional"
 ```
 
 ### Relayer Commands
-WIP
-The relayer is started with `relayer start`.
+
+`relayer start` starts the relayer with the specified configuration file
+
+`relayer verify config` reads and verifies that the specified configuration file parses correctly
+
+Other commands may be added as required.
 
 _Note: it is expected that the chains can be configured with client, connections and channels. For testing purposes gaia application should be run so access to the gaiacli for IBC related configuration is available_
 
 ### Light Client Functionality
 
 After the initialization step light clients are instantiated for the source and destination chains within the relayer. 
-In addition IBC clients are created on the source and destination chains if not already present.
 
-An IBC client for chain A must be instantiated on chain B for successful A->B relay of IBC packets. The client creation is permissionless and a relayer may create a client if not already present. The IBC client is identified by a clientID.
-
-The relayer runs its own lite client for A, retrieves and verifies headers, and updates chain B with new headers when needed. 
-In order to detect the existence of an A-client with idA on chain B, the relayer should query the A-client consensus state with client ID idA and verify the chain-id.
-
+In addition IBC clients must be created on the source and destination chains if not already present:
+- an IBC client for chain A must be instantiated on chain B for successful A->B relay of IBC packets. The client creation is permissionless and a relayer may create a client if not already present. The IBC client is identified by a clientID.
+- in order to detect the existence of an A-client with idA on chain B, the relayer should query the A-client consensus state with client ID idA and verify the chain-id.
 Notes: It is possible to create multiple clients for same chain. IBC specification does not provide a security model for attempts at diverting transactions to bogus chains. It is the application responsibility to ensure that the destination chain client is configured correctly (?). Clarification is needed here.
 
-Once the A-client exists on B, the relayer sends UpdateClient transactions. The relayer pays for these and it may optimize the number of transactions.
-For example, light client implementation of Tendermint supports bisection and the relayer may choose to send skipping headers to A-client on B. 
-It may retrieve the consensus state from the A-client on B, initialize its own light client with that state and then get new headers and trigger UpdateClient messages only when forwarding other IBC datagrams that require client updates. Alternatively it could continuously download headers and then, when required by new IBC datagrams, simulate the bisection algorithm and send ClientUpdate messages with the headers from local store. 
+The relayer runs its own lite client for A, retrieves and verifies headers, and once the A-client exists on B, it updates chain B with new headers as required. 
 
-### Basic/ Naive Relayer Algorithm
+The relayer must pay for all transactions, including the `clientUpdate` and therefore there are incentives for optimizations.
+For example, light client implementation of Tendermint supports bisection and the relayer may choose to send skipping headers to A-client on B. 
+One possibility is to retrieve the consensus state from the A-client on B, initialize its own light client with that state and then get new headers and trigger UpdateClient messages only when forwarding other IBC datagrams that require client updates. This has the advantage of updating the IBC client with the minimum amount of headers but the disatvantage is that the IBC transactions are delayed while relayer runs bisection.
+Alternatively the relayer could continuously download headers and then, when required by new IBC datagrams, simulate the bisection algorithm and send a minimum number of ClientUpdate messages with headers from local store. 
+
+### Basic Relayer Algorithm
 Note: This algorithm is adapted from the [relayer algorithm described in IBC Specifigication](https://github.com/cosmos/ics/blame/master/spec/ics-018-relayer-algorithms/README.md#L47) and [Go relayer implementation ](https://github.com/cosmos/relayer/blob/f3a302df9e6e0c28883f5480199d3190821bcc06/relayer/strategies.go#L49.).
 It only relays from `src` to `dest`.
 
