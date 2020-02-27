@@ -60,10 +60,10 @@ impl lite::Commit for block::signed_header::SignedHeader {
             );
         }
 
-        // make sure each vote is for the correct header
         for precommit_opt in self.commit.precommits.iter() {
             match precommit_opt {
                 Some(precommit) => {
+                    // make sure each vote is for the correct header
                     if let Some(header_hash) = precommit.header_hash() {
                         if header_hash != self.header_hash() {
                             fail!(
@@ -75,13 +75,18 @@ impl lite::Commit for block::signed_header::SignedHeader {
                             );
                         }
                     }
+
+                    // returns FaultyValidator error if the signer isn't present in the validator set
+                    if vals.validator(precommit.validator_address) == None {
+                        return Err(Kind::FaultyValidator {
+                            address: precommit.validator_address,
+                        }
+                        .into());
+                    }
                 }
                 None => (),
             }
         }
-
-        // TODO: check here if all the votes are from correct validators
-        // TODO: return error kind "InvalidValidator" if we find a vote from a validator not in the val set
 
         Ok(())
     }

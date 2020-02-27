@@ -1,6 +1,6 @@
 //! All error types tied to the light client.
 
-use crate::Hash;
+use crate::{account, Hash};
 use anomaly::{BoxError, Context};
 use std::time::SystemTime;
 use thiserror::Error;
@@ -78,6 +78,10 @@ pub enum Kind {
     /// the implementation, if any.
     #[error("Implementation specific error")]
     ImplementationSpecific,
+
+    /// This is returned when a validator has signed but isn't a part of the validator set
+    #[error("Found faulty validator: {address}")]
+    FaultyValidator { address: account::Id },
 }
 
 impl Kind {
